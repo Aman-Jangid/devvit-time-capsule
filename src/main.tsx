@@ -1,5 +1,12 @@
 // Learn more at developers.reddit.com/docs
-import { Devvit, RichTextBuilder, useForm } from "@devvit/public-api";
+import {
+  Devvit,
+  RichTextBuilder,
+  useAsync,
+  useForm,
+  useInterval,
+  useState,
+} from "@devvit/public-api";
 
 Devvit.configure({
   redditAPI: true,
@@ -33,8 +40,6 @@ Devvit.addMenuItem({
   },
 });
 
-// Create teaser post
-
 // Schedule the reveal
 Devvit.addSchedulerJob({
   name: "revealCapsule",
@@ -63,12 +68,25 @@ Devvit.addSchedulerJob({
     }
 
     const data = JSON.parse(capsuleData);
+    const comments = await context.reddit.getComments({
+      postId: teaserPostId,
+      limit: 100,
+    });
+
+    const guesses = comments.children
+      .filter((comment) => comment.body.startsWith("Guess:"))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 2)
+      .map(
+        (comment) =>
+          `${comment.authorName} - ${comment.score} votes - ${comment.body}`
+      );
     // Create reveal post
     const post = await context.reddit.submitPost({
       subredditName: context.subredditName || "",
       title: `Time Capsule: ${
         data.title
-      } Revealed by u/${context.reddit.getUserByUsername(username)}`,
+      } Revealed by u/${await context.reddit.getUserByUsername(username)}`,
       text: `**Title:** ${data.title}\n\n**Description:** ${data.description}\n\n**Reveal Date:** ${data.revealDate}\n\n**Theme:** ${data.theme}`,
     });
 
@@ -84,6 +102,82 @@ Devvit.addSchedulerJob({
 
 // useful stuff
 // Devvit.addTrigger({event:"AppInstall",onEvent:()=>{}})
+
+// REVEAL POST : convert to richtext post with capsule details
+// Devvit.addCustomPostType({
+//   name: "timeCapsuleReveal",
+//   height: "regular",
+//   render: (context) => {
+//     const [timeRemaining, setTimeRemaining] = useState("");
+//     const capsuleId = context.postId || "";
+
+//     const {
+//       data: capsuleData,
+//       error,
+//       loading,
+//     } = useAsync(
+//       () =>
+//         context.redis.get(capsuleId).then((data) => {
+//           return data ? JSON.parse(data) : null;
+//         }),
+//       { depends: [capsuleId] }
+//     );
+
+//     useInterval(() => {
+//       if (capsuleData) {
+//         const revealDate = new Date(capsuleData.revealDate);
+//         const now = new Date();
+//         const timeDiff = revealDate.getTime() - now.getTime();
+
+//         if (timeDiff > 0) {
+//           setTimeRemaining(
+//             `${Math.floor(timeDiff / (1000 * 60 * 60 * 24))} days, ${Math.floor(
+//               (timeDiff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60)
+//             )} hours, ${Math.floor(
+//               (timeDiff % (1000 * 60 * 60)) / (1000 * 60)
+//             )} minutes`
+//           );
+//         } else {
+//           setTimeRemaining("Time Capsule Revealed");
+//         }
+//       }
+//     }, 2000);
+
+//     console.log(loading, error);
+
+//     if (loading) {
+//       return (
+//         <vstack
+//           height="100%"
+//           width="100%"
+//           gap="medium"
+//           alignment="center middle"
+//         >
+//           <text>Loading...</text>
+//         </vstack>
+//       );
+//     }
+
+//     if (error || !capsuleData) {
+//       return (
+//         <vstack
+//           height="100%"
+//           width="100%"
+//           gap="medium"
+//           alignment="center middle"
+//         >
+//           <text>Error loading capsule data</text>
+//         </vstack>
+//       );
+//     }
+
+//     return (
+//       <vstack height="100%" width="100%" gap="medium" alignment="center middle">
+//         <text>Time Capsule Reveal : {timeRemaining}</text>
+//       </vstack>
+//     );
+//   },
+// });
 
 Devvit.addCustomPostType({
   name: "timeCapsule",
@@ -182,11 +276,26 @@ Devvit.addCustomPostType({
     );
 
     return (
-      <vstack height="100%" width="100%" gap="medium" alignment="center middle">
-        <button onPress={() => context.ui.showForm(form)}>
-          Create Time Capsule
-        </button>
-      </vstack>
+      <zstack height="100%" width="100%">
+        <image
+          width={100}
+          height={100}
+          imageHeight={100}
+          imageWidth={100}
+          resizeMode="cover"
+          url="https://preview.redd.it/i-work-at-reddit-creating-and-directing-art-on-the-brand-v0-l40z01pju1cc1.jpg?width=640&crop=smart&auto=webp&s=14df0a7ce79423e9c24fd7d3f616f5a8bc619a4c"
+        />
+        <vstack
+          height="100%"
+          width="100%"
+          gap="medium"
+          alignment="center middle"
+        >
+          <button onPress={() => context.ui.showForm(form)}>
+            Create Time Capsule
+          </button>
+        </vstack>
+      </zstack>
     );
   },
 });
@@ -194,15 +303,16 @@ Devvit.addCustomPostType({
 export default Devvit;
 
 // FLOW :
-// 1. User clicks on "Create Time Capsule" menu item
-// 2. User fills out the form and submits
-// 3. A teaser post is created with the capsule details
+// 1. User clicks on "Create Time Capsule" menu item - DONE
+// 2. User fills out the form and submits - DONE
+// 3. A teaser post is created with the capsule details (Generate an image based on the theme and the public datails of the capsule)
 // 4. The reveal post is scheduled to be created at the reveal date
 // 5. The teaser post is updated with the reveal post link
 // 6. The reveal post is created at the reveal date
 // 7. The reveal post is updated with the capsule details
 
 // TODO :
+// 0. There should be a feedback message when the capsule is created
 // 1. Add flair to the teaser post based on the theme
 // 2. Add image to the teaser post
 // 3. Add image to the reveal post
