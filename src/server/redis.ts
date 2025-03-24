@@ -14,10 +14,7 @@ const storeCapsuleData = async (
   }
 };
 
-const retrieveCapsuleData = async (
-  context: { redis: { get: (arg0: any) => any } },
-  capsuleId: any
-) => {
+const retrieveCapsuleData = async (context: Devvit.Context, capsuleId: any) => {
   try {
     const capsuleData = await context.redis.get(capsuleId);
     if (!capsuleData) {
@@ -30,4 +27,18 @@ const retrieveCapsuleData = async (
   }
 };
 
-export { storeCapsuleData, retrieveCapsuleData };
+const updateCapsuleData = async (
+  context: Devvit.Context,
+  capsuleId: any,
+  data: any
+) => {
+  try {
+    await context.redis.set(capsuleId, JSON.stringify(data), {});
+    return true;
+  } catch (error) {
+    console.error("Error updating capsule data:", error);
+    return false;
+  }
+};
+
+export { storeCapsuleData, retrieveCapsuleData, updateCapsuleData };
