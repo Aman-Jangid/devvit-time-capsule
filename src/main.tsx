@@ -1,21 +1,21 @@
-// Learn more at developers.reddit.com/docs
 import {
   Devvit,
   RichTextBuilder,
-  useAsync,
   useForm,
   useInterval,
   useState,
 } from "@devvit/public-api";
+
 import { CAPSULE_THEMES } from "./constants.js";
+
 import {
   retrieveCapsuleData,
   storeCapsuleData,
   updateCapsuleData,
 } from "./server/redis.js";
-import { formatDate, getCurrentDate } from "./utils/formatDate.js";
 import { createTeaserPost } from "./server/posts.js";
-import { sendNotificationToUser } from "./server/notification.js";
+
+import { formatDate, getCurrentDate } from "./utils/formatDate.js";
 
 Devvit.configure({
   redditAPI: true,
@@ -62,19 +62,6 @@ Devvit.addMenuItem({
 Devvit.addSchedulerJob({
   name: "revealTimeCapsule",
   onRun: async (event, context) => {
-    // send notifications to list of users
-    // const sendNotification = async (usernames: string) => {
-    //   // const users = await context.redis.get() // get list of users who upvoted the post
-    //   usernames.split(",").forEach(async (username) => {
-    //     await context.reddit.sendPrivateMessageAsSubreddit({
-    //       to: username,
-    //       subject: "Time Capsule Reveal",
-    //       text: `Your time capsule will be revealed in 10 minutes.`,
-    //       fromSubredditName: context.subredditName || "",
-    //     });
-    //   });
-    // };
-
     if (
       !event.data ||
       typeof event.data !== "object" ||
@@ -101,20 +88,24 @@ Devvit.addSchedulerJob({
     }
 
     const data = JSON.parse(capsuleData);
-    const comments = await context.reddit.getComments({
-      postId: teaserPostId,
-      limit: 100,
-    });
+    let bestGuesses: void | PromiseLike<void> | string[];
+    try {
+      const post = await context.reddit.getPostById(capsuleId);
+      const comments = await post.comments.all();
 
-    // list top 2 guesses
-    const guesses = comments.children
-      .filter((comment) => comment.body.startsWith("Guess:"))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 2)
-      .map(
-        (comment) =>
-          `${comment.authorName} - ${comment.score} votes - ${comment.body}`
-      );
+      const guesses = comments
+        .filter((comment) => comment.body.startsWith("Guess:"))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 2)
+        .map(
+          (comment) =>
+            `${comment.authorName} - ${comment.score} votes - ${comment.body}`
+        );
+
+      bestGuesses = guesses;
+    } catch (e) {
+      console.error("Error fetching best guesses:", e);
+    }
 
     // create reveal post
     const revealPost = await context.reddit.submitPost({
@@ -132,7 +123,7 @@ Devvit.addSchedulerJob({
         .paragraph(async () => {
           return `The top 2 guesses were:`;
         })
-        .list({ ordered: true }, async () => guesses),
+        .list({ ordered: true }, async () => bestGuesses),
     });
 
     // Update the teaser post with the reveal post link
@@ -145,39 +136,33 @@ Devvit.addSchedulerJob({
   },
 });
 
-// const remindMeHandler = async (capsuleId, userId, context) => {
-//   const capsuleData = await context.redis.get(`capsule:${capsuleId}`);
-//   if (!capsuleData) return;
+Devvit.addSchedulerJob({
+  name: "sendNotification",
+  onRun: async (event, context) => {
+    const { user, title, revealDate } = event.data as {
+      user: string;
+      title: string;
+      revealDate: string;
+    };
 
-//   const capsule = JSON.parse(capsuleData);
-//   const revealDate = new Date(capsule.revealTime);
+    if (!user) {
+      console.error("username not provided");
+      return;
+    }
 
-//   await context.scheduler.runAt({
-//     name: 'send_reminder',
-//     data: {
-//       userId,
-//       capsuleId,
-//       theme: capsule.theme
-//     },
-//     runAt: revealDate,
-//   });
-
-//   context.ui.showToast('You will be reminded when this capsule is revealed!');
-// };
-
-// Devvit.addSchedulerJob({
-//   name: "send_reminder",
-//   onRun: async (event, context) => {
-//     const { userId, capsuleId, theme } = event.data;
-
-//     // Send a private message to the user
-//     await context.reddit.sendPrivateMessage({
-//       to: userId,
-//       subject: "Time Capsule Reminder",
-//       text: `The time capsule "${theme}" has been revealed! Check it out in the subreddit.`,
-//     });
-//   },
-// });
+    try {
+      const subredditName = context.subredditName || "";
+      await context.reddit.sendPrivateMessageAsSubreddit({
+        to: user,
+        subject: "Time Capsule Reveal",
+        text: `Your time capsule "${title}" will be revealed on ${revealDate}.`,
+        fromSubredditName: subredditName,
+      });
+    } catch (error) {
+      console.error(`Failed to send notification to ${user}:`, error);
+    }
+  },
+});
 
 // Main post type for the time capsule
 Devvit.addCustomPostType({
@@ -189,21 +174,31 @@ Devvit.addCustomPostType({
     const CURRENT_POST_ID = context.postId || "";
 
     // State
-    const [page, setPage] = useState(0);
-    const [backgroundUrl, setBackgroundUrl] = useState("background.jpg");
-    const [error, setError] = useState("");
-    const [teaserPostId, setTeaserPostId] = useState("");
+    const [page, setPage] = useState<number>(0);
+    const [backgroundUrl, setBackgroundUrl] =
+      useState<string>("background.jpg");
+    const [error, setError] = useState<string>("");
+    const [teaserPostId, setTeaserPostId] = useState<string>("");
+    const [currentUsername, setCurrentUsername] = useState<string>("");
+    const [time, setTime] = useState<string>("");
+    // TODO : Gracefully handle the case when the form content is not available
     const [formContent, setFormContent] = useState(async () => {
       try {
         const data = await retrieveCapsuleData(context, CURRENT_POST_ID);
-        console.log(data);
+        if (!data)
+          return {
+            title: "",
+            description: "",
+            revealDate: "",
+            image: "" as any,
+            theme: CAPSULE_THEMES[0],
+          };
+        if (data.buried) setPage(6);
         return data;
       } catch (e) {
         console.error("Error getting post data:", e);
       }
     });
-    const [currentUsername, setCurrentUsername] = useState<string>("");
-    const [capsuleId, setCapsuleId] = useState("");
 
     // UI helpers
     const setMainBackground = () => {
@@ -219,11 +214,23 @@ Devvit.addCustomPostType({
       setPage(0);
     };
 
+    // Intervals
     const buryingInterval = useInterval(() => {
       setPage(3);
       setMainBackground();
       buryingInterval.stop();
     }, 3500);
+    const getCurrentTime = () => {
+      // countdown to reveal date (YYYY-MM-DD HH:MM:SS)
+
+      const now = new Date();
+      const hours = String(now.getHours()).padStart(2, "0");
+      const minutes = String(now.getMinutes()).padStart(2, "0");
+      const seconds = String(now.getSeconds()).padStart(2, "0");
+      setTime(`${hours}:${minutes}:${seconds}`);
+    };
+
+    useInterval(getCurrentTime, 1000).start();
 
     // set splash image for the post
     (async () => {
@@ -244,20 +251,6 @@ Devvit.addCustomPostType({
       }
     })();
 
-    // get post status
-    // (async () => {
-    //   try {
-    //     const data = await retrieveCapsuleData(context, CURRENT_POST_ID);
-    //     console.log(data);
-    //     if (buried) {
-    //       setPage(6);
-    //       return;
-    //     }
-    //   } catch (e) {
-    //     console.error("Error getting post status:", e);
-    //   }
-    // })();
-
     // Form for creating the time capsule post
     const form = useForm(
       {
@@ -270,24 +263,23 @@ Devvit.addCustomPostType({
             type: "string",
             label: "Title",
             required: true,
-            defaultValue: formContent.title || "",
+            defaultValue: formContent?.title || "",
           },
           {
             name: "capsuleDescription",
             type: "paragraph",
             label: "Description",
             required: true,
-            defaultValue: formContent.description || "",
+            defaultValue: formContent?.description || "",
           },
           {
             name: "capsuleRevealDate",
             type: "string",
             label: "Reveal Date",
-            helpText:
-              "Format: MM/DD/YYYY HH:MM AM/PM (or any other with spaces in between)",
+            helpText: "Format: MM/DD/YYYY HH:MM AM/PM",
             placeholder: "12/12/2025 12:00 AM",
             required: true,
-            defaultValue: formContent.revealDate || getCurrentDate(),
+            defaultValue: formContent?.revealDate || getCurrentDate(),
           },
           {
             name: "capsuleTheme",
@@ -295,7 +287,7 @@ Devvit.addCustomPostType({
             label: "Type of content inside the capsule",
             options: CAPSULE_THEMES,
             required: true,
-            defaultValue: formContent.theme || CAPSULE_THEMES[0],
+            defaultValue: formContent?.theme || CAPSULE_THEMES[0],
           },
           {
             name: "capsuleImage",
@@ -314,13 +306,10 @@ Devvit.addCustomPostType({
           theme: data.capsuleTheme,
         });
 
-        // get post id
-        const capsuleId = Date.now().toString();
-        setCapsuleId(capsuleId);
-
+        // storing form data in redis
         const stored = await storeCapsuleData(
           context,
-          capsuleId,
+          CURRENT_POST_ID,
           JSON.stringify({ ...data, buried: false })
         );
 
@@ -331,6 +320,35 @@ Devvit.addCustomPostType({
         }
 
         setPage(1);
+      }
+    );
+
+    // Form for guessing
+    const guessForm = useForm(
+      {
+        acceptLabel: "Guess",
+        cancelLabel: "Later",
+        title: "Guess the contents of the time capsule",
+        fields: [
+          {
+            name: "guess",
+            type: "string",
+            label: "Your Guess",
+            required: true,
+          },
+        ],
+      },
+      async (data) => {
+        try {
+          const post = await context.reddit.getPostById(CURRENT_POST_ID);
+          await (
+            await post.addComment({ text: `Guess: ${data.guess}` })
+          ).approve();
+          (await post.addComment({ text: `Guess: ${data.guess}` })).approve();
+          context.ui.showToast("Your guess has been submitted!");
+        } catch (e) {
+          console.error("Error trying to guess on the post:", e);
+        }
       }
     );
 
@@ -385,6 +403,29 @@ Devvit.addCustomPostType({
       }
     };
 
+    const notifyUser = async () => {
+      try {
+        const user = await context.reddit.getCurrentUsername();
+
+        if (!user) {
+          console.error("Failed to get current user");
+          return;
+        }
+        await context.scheduler.runJob({
+          name: "sendNotification",
+          data: {
+            user,
+            title: formContent.title || "Dummy title",
+            revealDate: formContent.revealDate || "03/25/25 10:05 PM",
+          },
+          // run 2 minute later than current time
+          runAt: new Date(Date.now() + 120000),
+        });
+      } catch (e) {
+        console.error("Error notifying user:", e);
+      }
+    };
+
     // TODO : Testing stuff
     const test = async () => {};
 
@@ -394,8 +435,9 @@ Devvit.addCustomPostType({
     // navigation
     switch (page) {
       // -1: Loading
-      case -1:
+      default:
         console.log("LOADING........");
+        // TODO : set background to loading.gif
         break;
       // 0: Main
       case 0:
@@ -423,7 +465,8 @@ Devvit.addCustomPostType({
               <button onPress={() => context.ui.showForm(form)} size="large">
                 Create time capsule
               </button>
-              <button onPress={test}>Click me to test!</button>
+              <button onPress={test}>{time}</button>
+              {/* <button onPress={test}>Click me to test!</button> */}
             </vstack>
           </>
         );
@@ -549,26 +592,9 @@ Devvit.addCustomPostType({
         );
       // 5: Teaser
       case 6:
-        let th = formContent.theme[0];
         // set background based on the theme
-        switch (th) {
-          // switch (formContent.theme[0]) {
-          case "prediction":
-            setBackgroundUrl("prediction.jpg");
-            break;
-          case "nostalgia":
-            setBackgroundUrl("nostalgia.jpg");
-            break;
-          case "announcement":
-            setBackgroundUrl("announcement.avif");
-            break;
-          case "other":
-            setBackgroundUrl("other.jpg");
-            break;
-          default:
-            setBackgroundUrl("default.jpg");
-            break;
-        }
+        setBackgroundUrl(formContent.theme[0].toLowerCase() + ".jpg");
+
         content = (
           <vstack height="100%" width="100%" alignment="middle center">
             <text size="xxlarge">Teaser</text>
@@ -582,23 +608,13 @@ Devvit.addCustomPostType({
             <vstack width="100%" alignment="middle center">
               <vstack>
                 <text>Click below to notify you before the reveal.</text>
-                <button
-                  onPress={() =>
-                    console.log("Notify me 5 minutes before reveal")
-                  }
-                >
-                  Remind me!
-                </button>
+                <button onPress={notifyUser}>Remind me!</button>
               </vstack>
               <vstack>
                 <text>Guess what's inside the capsule!</text>
                 <button
                   onPress={() =>
-                    context.ui.navigateTo(
-                      `https://www.reddit.com/r/${CURRENT_SUBREDDIT_NAME}/comments/${
-                        teaserPostId || CURRENT_POST_ID
-                      }/`
-                    )
+                    context.ui.showForm(guessForm, { title: "Guess" })
                   }
                 >
                   Guess
