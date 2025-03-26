@@ -1,7 +1,6 @@
 import {
   Devvit,
   RichTextBuilder,
-  useAsync,
   useForm,
   useInterval,
   useState,
@@ -15,7 +14,12 @@ import {
   updateCapsuleData,
 } from "./server/redis.js";
 
-import { formatDate, getCurrentDate, getCurrentTime } from "./utils/time.js";
+import {
+  compareDates,
+  countdown,
+  formatDate,
+  getCurrentDate,
+} from "./utils/time.js";
 
 Devvit.configure({
   redditAPI: true,
@@ -187,8 +191,19 @@ Devvit.addCustomPostType({
       theme: CAPSULE_THEMES[0],
     };
 
+    enum PageType {
+      MAIN,
+      CONFIRM,
+      BURYING,
+      SUCCESS,
+      ERROR,
+      ABOUT,
+      TEASER,
+      REVEAL,
+    }
+
     // State
-    const [page, setPage] = useState<number>(0);
+    const [page, setPage] = useState<number>(PageType.MAIN);
     const [backgroundUrl, setBackgroundUrl] =
       useState<string>("background.jpg");
     const [error, setError] = useState<string>("");
@@ -198,7 +213,9 @@ Devvit.addCustomPostType({
       try {
         const data = await retrieveCapsuleData(context, CURRENT_POST_ID);
         if (!data) return DEFAULT_FORM_CONTENT;
-        if (data.buried) setPage(6);
+        if (compareDates(formatDate(data.revealDate), new Date()) < 0)
+          setPage(PageType.REVEAL);
+        else if (data.buried) setPage(PageType.TEASER);
         return data;
       } catch (e) {
         console.error("Error getting post data:", e);
@@ -217,17 +234,17 @@ Devvit.addCustomPostType({
 
     const returnToMainPage = () => {
       setMainBackground();
-      setPage(0);
+      setPage(PageType.MAIN);
     };
 
     // Intervals
     const buryingInterval = useInterval(() => {
-      setPage(3);
+      setPage(PageType.SUCCESS);
       setMainBackground();
       buryingInterval.stop();
     }, 3500);
 
-    useInterval(() => setTime(getCurrentTime), 1000).start();
+    useInterval(() => setTime(countdown(formContent.revealDate)), 1000).start();
 
     // Form for creating the time capsule post
     const form = useForm(
@@ -293,11 +310,11 @@ Devvit.addCustomPostType({
 
         if (!stored) {
           setError("Failed to store capsule data");
-          setPage(4);
+          setPage(PageType.ERROR);
           return;
         }
 
-        setPage(1);
+        setPage(PageType.CONFIRM);
       }
     );
 
@@ -356,7 +373,7 @@ Devvit.addCustomPostType({
           runAt: formattedRevealDate,
         });
 
-        setPage(2);
+        setPage(PageType.BURYING);
         updateCapsuleData(context, CURRENT_POST_ID, {
           ...formContent,
           buried: true,
@@ -364,7 +381,7 @@ Devvit.addCustomPostType({
       } catch (e) {
         console.error("Error burying capsule:", e);
         setError(e instanceof Error ? e.message : String(e));
-        setPage(4);
+        setPage(PageType.ERROR);
       }
     };
 
@@ -409,13 +426,8 @@ Devvit.addCustomPostType({
 
     // navigation
     switch (page) {
-      // default: Loading
-      default:
-        console.log("LOADING........");
-        // TODO : set background to loading.gif
-        break;
       // 0: Main
-      case 0:
+      case PageType.MAIN:
         content = (
           <>
             <hstack
@@ -437,7 +449,7 @@ Devvit.addCustomPostType({
               <icon
                 name="help"
                 size="large"
-                onPress={() => setPage(5)}
+                onPress={() => setPage(PageType.ABOUT)}
                 color="orange"
               />
             </hstack>
@@ -450,7 +462,7 @@ Devvit.addCustomPostType({
         );
         break;
       // 1: Confirm capsule content
-      case 1:
+      case PageType.CONFIRM:
         content = (
           <>
             <vstack height="100%" width="100%" alignment="middle center">
@@ -480,7 +492,7 @@ Devvit.addCustomPostType({
         );
         break;
       // 2: Bury capsule
-      case 2:
+      case PageType.BURYING:
         showBuryingAnimation();
         content = (
           <vstack height="100%" width="100%" alignment="middle center">
@@ -490,7 +502,7 @@ Devvit.addCustomPostType({
         buryingInterval.start();
         break;
       // 3: Success
-      case 3:
+      case PageType.SUCCESS:
         content = (
           <vstack
             height="100%"
@@ -510,15 +522,17 @@ Devvit.addCustomPostType({
             </text>
             <spacer height={5} />
             <text size="xlarge" wrap>
-              You will be notified 10 minutes before the reveal.
+              You will be notified 1 minute before the reveal.
             </text>
             <spacer height={20} />
-            <button onPress={() => setPage(6)}>See teaser {"->"}</button>
+            <button onPress={() => setPage(PageType.TEASER)}>
+              See teaser {"->"}
+            </button>
           </vstack>
         );
         break;
       // 4: Error
-      case 4:
+      case PageType.ERROR:
         content = (
           <vstack height="100%" width="100%" alignment="middle center">
             <text size="xlarge">
@@ -535,7 +549,7 @@ Devvit.addCustomPostType({
         ) as any;
         break;
       // 4: About
-      case 5:
+      case PageType.ABOUT:
         content = (
           <vstack height="100%" width="100%" alignment="middle center">
             <vstack height="100%" width="60%" alignment="middle center">
@@ -554,13 +568,13 @@ Devvit.addCustomPostType({
                 You will be notified 10 minutes before the reveal.
               </text>
               <spacer height={10} />
-              <button onPress={() => setPage(0)}>Back</button>
+              <button onPress={() => setPage(PageType.MAIN)}>Back</button>
             </vstack>
           </vstack>
         );
         break;
       // 5: Teaser
-      case 6:
+      case PageType.TEASER:
         // set background based on the theme
         setBackgroundUrl(formContent.theme[0].toLowerCase() + ".jpg");
 
@@ -570,8 +584,9 @@ Devvit.addCustomPostType({
             <text size="xlarge">Time capsule buried by {currentUsername}</text>
             <spacer height={10} />
             <text size="xlarge">
-              Will be revealed on the subreddit {CURRENT_SUBREDDIT_NAME} on{" "}
-              {formContent.revealDate}
+              {time === "00d 00h 00m 00s"
+                ? `${setPage(PageType.REVEAL)}`
+                : `Will be revealed on the subreddit ${CURRENT_SUBREDDIT_NAME} in ${time}`}
             </text>
             <spacer height={10} />
             <vstack width="100%" alignment="middle center">
@@ -590,6 +605,25 @@ Devvit.addCustomPostType({
                 </button>
               </vstack>
             </vstack>
+          </vstack>
+        );
+        break;
+      // 6: Reveal
+      case PageType.REVEAL:
+        content = (
+          <vstack height="100%" width="100%" alignment="middle center">
+            <text size="xxlarge">Time Capsule Reveal</text>
+            <spacer height={10} />
+            <text size="xlarge">
+              The time capsule was buried by {currentUsername} and will be
+              revealed on {formContent.revealDate}
+            </text>
+            <spacer height={10} />
+            <text size="xlarge" wrap>
+              The contents of the time capsule will be revealed here.
+            </text>
+            <spacer height={10} />
+            <button onPress={() => setPage(PageType.ABOUT)}>About</button>
           </vstack>
         );
         break;
