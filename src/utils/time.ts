@@ -7,6 +7,15 @@ const formatDate = (dateString: string) => {
   }
 };
 
+const getCurrentTime = () => {
+  // countdown to reveal date (YYYY-MM-DD HH:MM:SS)
+  const now = new Date();
+  const hours = String(now.getHours()).padStart(2, "0");
+  const minutes = String(now.getMinutes()).padStart(2, "0");
+  const seconds = String(now.getSeconds()).padStart(2, "0");
+  return `${hours}:${minutes}:${seconds}`;
+};
+
 function getCurrentDate() {
   const options: Intl.DateTimeFormatOptions = {
     hour: "2-digit",
@@ -23,4 +32,4 @@ function getCurrentDate() {
   return `${month}/${day}/${year} ${time}`;
 }
 
-export { formatDate, getCurrentDate };
+export { formatDate, getCurrentDate, getCurrentTime };

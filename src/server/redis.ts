@@ -18,7 +18,7 @@ const retrieveCapsuleData = async (context: Devvit.Context, capsuleId: any) => {
   try {
     const capsuleData = await context.redis.get(capsuleId);
     if (!capsuleData) {
-      throw new Error("Capsule data not found");
+      return null;
     }
     return JSON.parse(capsuleData);
   } catch (error) {

@@ -1,6 +1,7 @@
 import {
   Devvit,
   RichTextBuilder,
+  useAsync,
   useForm,
   useInterval,
   useState,
@@ -14,7 +15,7 @@ import {
   updateCapsuleData,
 } from "./server/redis.js";
 
-import { formatDate, getCurrentDate } from "./utils/formatDate.js";
+import { formatDate, getCurrentDate, getCurrentTime } from "./utils/time.js";
 
 Devvit.configure({
   redditAPI: true,
@@ -47,6 +48,17 @@ Devvit.addMenuItem({
           </vstack>
         ),
       });
+
+      post.setCustomPostPreview(() => (
+        <vstack height="100%" width="100%" alignment="middle center">
+          <image
+            url="splash.jpg"
+            imageHeight={500}
+            imageWidth={900}
+            resizeMode="cover"
+          />
+        </vstack>
+      ));
       ui.navigateTo(post);
     } catch (e) {
       console.error(e);
@@ -150,7 +162,7 @@ Devvit.addSchedulerJob({
       await context.reddit.sendPrivateMessageAsSubreddit({
         to: user,
         subject: "Time Capsule Reminder",
-        text: `Time capsule "${title}" by ${author} buried in r/${subredditName} will be revealed on ${revealDate} in 2 minutes.`,
+        text: `You can now see the contents of the Time-Capsule "${title}" by ${author} buried in r/${subredditName} set to be revealed on ${revealDate}.`,
         fromSubredditName: subredditName,
       });
     } catch (error) {
@@ -214,36 +226,8 @@ Devvit.addCustomPostType({
       setMainBackground();
       buryingInterval.stop();
     }, 3500);
-    const getCurrentTime = () => {
-      // countdown to reveal date (YYYY-MM-DD HH:MM:SS)
 
-      const now = new Date();
-      const hours = String(now.getHours()).padStart(2, "0");
-      const minutes = String(now.getMinutes()).padStart(2, "0");
-      const seconds = String(now.getSeconds()).padStart(2, "0");
-      setTime(`${hours}:${minutes}:${seconds}`);
-    };
-
-    useInterval(getCurrentTime, 1000).start();
-
-    // set splash image for the post
-    (async () => {
-      try {
-        const post = await context.reddit.getPostById(CURRENT_POST_ID);
-        post.setCustomPostPreview(() => (
-          <vstack height="100%" width="100%" alignment="middle center">
-            <image
-              url="splash.jpg"
-              imageHeight={500}
-              imageWidth={900}
-              resizeMode="cover"
-            />
-          </vstack>
-        ));
-      } catch (e) {
-        console.error("Error setting splash image:", e);
-      }
-    })();
+    useInterval(() => setTime(getCurrentTime), 1000).start();
 
     // Form for creating the time capsule post
     const form = useForm(
@@ -320,9 +304,9 @@ Devvit.addCustomPostType({
     // Form for guessing
     const guessForm = useForm(
       {
-        acceptLabel: "Guess",
-        cancelLabel: "Later",
-        title: "Guess the contents of the time capsule",
+        acceptLabel: "Make the guess!",
+        cancelLabel: "Never mind",
+        title: "Guess the contents of the time capsule!",
         fields: [
           {
             name: "guess",
@@ -338,7 +322,6 @@ Devvit.addCustomPostType({
           await (
             await post.addComment({ text: `Guess: ${data.guess}` })
           ).approve();
-          (await post.addComment({ text: `Guess: ${data.guess}` })).approve();
           context.ui.showToast("Your guess has been submitted!");
         } catch (e) {
           console.error("Error trying to guess on the post:", e);
@@ -393,31 +376,40 @@ Devvit.addCustomPostType({
           console.error("Failed to get current user");
           return;
         }
+
+        if (!formContent.revealDate) {
+          console.error(
+            "Invalid reveal date format : " + formContent.revealDate
+          );
+          return;
+        }
+
+        const revealDate = new Date(formContent.revealDate);
+        const notificationDate = new Date(revealDate.getTime() + 1000);
+
         await context.scheduler.runJob({
           name: "sendNotification",
           data: {
             user,
             author: currentUsername,
-            title: formContent.title || "Dummy title",
-            revealDate: formContent.revealDate || "03/25/25 10:05 PM",
+            title: formContent.title,
+            // TODO : show date in viewers's timezone
+            revealDate: revealDate.toUTCString(),
           },
-          // run 2 minute later than current time
-          runAt: new Date(Date.now() + 120000),
+          // Notify user 1 second after the reveal date
+          runAt: notificationDate,
         });
+        context.ui.showToast("You will be notified 1 minute before reveal.");
       } catch (e) {
         console.error("Error notifying user:", e);
       }
     };
 
-    // TODO : Testing stuff
-    const test = async () => {};
-
-    // extract the data from the form and create the post
     let content = <></>;
 
     // navigation
     switch (page) {
-      // -1: Loading
+      // default: Loading
       default:
         console.log("LOADING........");
         // TODO : set background to loading.gif
@@ -442,7 +434,12 @@ Devvit.addCustomPostType({
               alignment="top end"
               padding="medium"
             >
-              <icon name="help" size="large" onPress={() => setPage(5)} />
+              <icon
+                name="help"
+                size="large"
+                onPress={() => setPage(5)}
+                color="orange"
+              />
             </hstack>
             <vstack height="100%" width="100%" alignment="middle center">
               <button onPress={() => context.ui.showForm(form)} size="large">
@@ -561,6 +558,7 @@ Devvit.addCustomPostType({
             </vstack>
           </vstack>
         );
+        break;
       // 5: Teaser
       case 6:
         // set background based on the theme
