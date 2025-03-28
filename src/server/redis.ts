@@ -27,18 +27,4 @@ const retrieveCapsuleData = async (context: Devvit.Context, capsuleId: any) => {
   }
 };
 
-const updateCapsuleData = async (
-  context: Devvit.Context,
-  capsuleId: any,
-  data: any
-) => {
-  try {
-    await context.redis.set(capsuleId, JSON.stringify(data), {});
-    return true;
-  } catch (error) {
-    console.error("Error updating capsule data:", error);
-    return false;
-  }
-};
-
-export { storeCapsuleData, retrieveCapsuleData, updateCapsuleData };
+export { storeCapsuleData, retrieveCapsuleData };
