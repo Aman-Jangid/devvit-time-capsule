@@ -5,11 +5,10 @@ import { CAPSULE_THEMES } from "./constants.js";
 import { retrieveCapsuleData, storeCapsuleData } from "./server/redis.js";
 
 import {
-  compareDates,
+  convertToLocalTime,
+  convertToUTC,
   countdown,
-  formatDate,
   getCurrentDate,
-  getCurrentTime,
 } from "./utils/time.js";
 
 Devvit.configure({
@@ -24,7 +23,7 @@ Devvit.addMenuItem({
   onPress: async (_event, context) => {
     const { reddit, ui } = context;
     ui.showToast(
-      "Constructing a new time capsule factory - upon completion you'll be able to create time capsules."
+      "Initializing time capsule creation - your new capsule will be ready momentarily."
     );
 
     try {
@@ -57,7 +56,7 @@ Devvit.addMenuItem({
       ui.navigateTo(post);
     } catch (e) {
       console.error(e);
-      ui.showToast("An error occurred while creating the time capsule.");
+      ui.showToast("Failed to create time capsule. Please try again later.");
     }
   },
 });
@@ -79,12 +78,12 @@ Devvit.addSchedulerJob({
     }
 
     try {
-      const subredditName = await context.reddit.getCurrentSubredditName();
-      await context.reddit.sendPrivateMessageAsSubreddit({
+      // const subredditName = await context.reddit.getCurrentSubredditName();
+      await context.reddit.sendPrivateMessage({
         to: user,
-        subject: "Time Capsule Reminder",
-        text: `You can now see the contents of the Time-Capsule "${title}" by ${author} buried in r/${subredditName} set to be revealed on ${revealDate}.`,
-        fromSubredditName: subredditName,
+        subject: `Time Capsule Reveal: ${title}`,
+        text: `The time capsule "${title}" created by u/${author} is about to be revealed at ${revealDate}!`,
+        // fromSubredditName: subredditName,
       });
     } catch (error) {
       console.error(`Failed to send notification to ${user}:`, error);
@@ -101,13 +100,14 @@ Devvit.addCustomPostType({
     const CURRENT_SUBREDDIT_NAME = context.subredditName || "";
     const CURRENT_POST_ID = context.postId || "";
     const DEFAULT_FORM_CONTENT = {
-      title: "dummy title",
-      description: "dummy description",
-      revealDate: "12/12/2025 12:00 AM",
-      image: "https://i.redd.it/vec1541jowqe1.jpeg" as any,
+      title: "",
+      description: "",
+      revealDate: "",
+      image: "",
       theme: CAPSULE_THEMES[0],
     };
 
+    // TODO : Add pages for revealed content
     enum Pages {
       MAIN,
       CONFIRM,
@@ -122,6 +122,44 @@ Devvit.addCustomPostType({
       DATETIME_SELECTOR,
     }
 
+    // Intervals
+    const buryingInterval = useInterval(() => {
+      setPage(Pages.SUCCESS);
+      setMainBackground();
+      buryingInterval.stop();
+    }, 3500);
+
+    const timerInterval = useInterval(() => {
+      if (formContent && formContent.buried && formContent.revealDate) {
+        checkRevealTime(formContent.revealDate);
+      }
+      setTime(countdown(formContent.revealDate));
+    }, 1000);
+
+    timerInterval.start();
+
+    const checkRevealTime = (revealDateString: string | number | Date) => {
+      const revealDate = new Date(revealDateString);
+      const now = new Date();
+
+      // If we're already on the REVEAL_CONTENT page, don't change anything
+      if (page === Pages.REVEAL_CONTENT) {
+        return;
+      }
+
+      if (now.getTime() >= revealDate.getTime()) {
+        // Only change to REVEAL if we're not already there
+        if (page !== Pages.REVEAL) {
+          setPage(Pages.REVEAL);
+        }
+      } else {
+        // Only change to TEASER if we're not already there
+        if (page !== Pages.TEASER) {
+          setPage(Pages.TEASER);
+        }
+      }
+    };
+
     // State
     const [page, setPage] = useState<number>(Pages.MAIN);
     const [backgroundUrl, setBackgroundUrl] =
@@ -129,16 +167,17 @@ Devvit.addCustomPostType({
     const [error, setError] = useState<string>("");
     const [currentUsername, setCurrentUsername] = useState<string>("");
     const [time, setTime] = useState<string>("");
-    // paginate text content if it doesn't fit in the page
-    const [textContentPage, setTextContentPage] = useState<number>(0);
+    // TODO : paginate text content if it doesn't fit in the page
+    // const [textContentPage, setTextContentPage] = useState<number>(0);
+
     const [formContent, setFormContent] = useState(async () => {
       try {
         const data = await retrieveCapsuleData(context, CURRENT_POST_ID);
         if (!data) return DEFAULT_FORM_CONTENT;
+
         if (data.buried) {
-          if (compareDates(formatDate(data.revealDate), new Date()) < 0)
-            setPage(Pages.REVEAL);
-          else setPage(Pages.TEASER);
+          // Initial check when the app loads
+          checkRevealTime(data.revealDate);
         }
         return data;
       } catch (e) {
@@ -146,15 +185,14 @@ Devvit.addCustomPostType({
         return DEFAULT_FORM_CONTENT;
       }
     });
-    // datetime
     const [dateTime, setDateTime] = useState({
-      month: 0,
-      day: 0,
-      year: 0,
-      hour: 0,
+      month: 1,
+      day: 1,
+      year: new Date().getFullYear(),
+      hour: 12,
       minute: 0,
       ampm: "AM",
-    });
+    } as any);
 
     // UI helpers
     const setMainBackground = () => {
@@ -168,38 +206,89 @@ Devvit.addCustomPostType({
         setBackgroundUrl(formContent.theme[0].toLowerCase() + ".jpg");
       }
     };
-
     const returnToMainPage = () => {
       setMainBackground();
       setPage(Pages.MAIN);
     };
 
-    const updateRevealDate = async (revealDate: any) => {
-      setFormContent({ ...formContent, revealDate: revealDate });
+    // Convert local date to UTC for storage
+
+    // Update reveal date function
+    const updateRevealDate = async (revealDate: string) => {
+      // Convert to UTC before storing
+      const utcRevealDate = convertToUTC(revealDate);
+      setFormContent({ ...formContent, revealDate: utcRevealDate });
       await storeCapsuleData(
         context,
         CURRENT_POST_ID,
-        JSON.stringify({ ...formContent, revealDate: revealDate })
+        JSON.stringify({ ...formContent, revealDate: utcRevealDate })
       );
     };
 
-    // Intervals
-    const buryingInterval = useInterval(() => {
-      setPage(Pages.SUCCESS);
-      setMainBackground();
-      buryingInterval.stop();
-    }, 3500);
+    const setInitialDateTime = () => {
+      // Get current date/time and add 1 minute
+      const now = new Date();
+      now.setMinutes(now.getMinutes() + 1);
 
-    useInterval(() => {
-      // if (time === "00d 00h 00m 00s") {
-      //   setPage(Pages.REVEAL);
-      //   setRevealBackground();
-      //   return;
-      // }
-      setTime(countdown(formContent.revealDate));
-    }, 1000).start();
+      // Format using the same logic as getCurrentDate
+      const month = now.getMonth() + 1; // getMonth() is 0-indexed
+      const day = now.getDate();
+      const year = now.getFullYear();
+
+      let hour = now.getHours();
+      const ampm = hour >= 12 ? "PM" : "AM";
+
+      // Convert to 12-hour format
+      hour = hour % 12;
+      hour = hour ? hour : 12; // the hour '0' should be '12'
+
+      const minute = now.getMinutes();
+
+      // Set the dateTime state
+      setDateTime({
+        month,
+        day,
+        year,
+        hour,
+        minute,
+        ampm,
+      });
+    };
+
+    // const getRevealDate = (
+    //   formData: { capsuleTitle: string } & { capsuleDescription: string } & {
+    //     capsuleTheme: string[];
+    //   } & { capsuleImage?: string | undefined } & { [key: string]: any }
+    // ) => {
+    //   setPage(Pages.DATETIME_SELECTOR);
+    //   setFormContent({ ...formContent, revealDate: getCurrentDate() });
+    //   // get revealDate from dateTime
+
+    //   const revealDate = new Date(
+    //     Date.UTC(
+    //       dateTime.year,
+    //       dateTime.month - 1,
+    //       dateTime.day,
+    //       dateTime.ampm === "PM" && dateTime.hour !== 12
+    //         ? dateTime.hour + 12
+    //         : dateTime.ampm === "AM" && dateTime.hour === 12
+    //         ? 0
+    //         : dateTime.hour,
+    //       dateTime.minute
+    //     )
+    //   );
+
+    //   setFormContent({
+    //     title: formData.capsuleTitle,
+    //     description: formData.capsuleDescription,
+    //     revealDate: revealDate.toISOString(),
+    //     image: formData.capsuleImage,
+    //     theme: formData.capsuleTheme,
+    //   });
+    // };
 
     // Form for creating the time capsule post
+
     const form = useForm(
       {
         acceptLabel: "Bury Capsule",
@@ -221,15 +310,6 @@ Devvit.addCustomPostType({
             defaultValue: formContent?.description || "",
           },
           {
-            name: "capsuleRevealDate",
-            type: "string",
-            label: "Reveal Date",
-            helpText: "Format: MM/DD/YYYY HH:MM AM/PM",
-            placeholder: "12/12/2025 12:00 AM",
-            required: true,
-            defaultValue: formContent?.revealDate || getCurrentDate(),
-          },
-          {
             name: "capsuleTheme",
             type: "select",
             label: "Type of content inside the capsule",
@@ -246,15 +326,7 @@ Devvit.addCustomPostType({
         ],
       },
       async (data) => {
-        setFormContent({
-          title: data.capsuleTitle,
-          description: data.capsuleDescription,
-          revealDate: data.capsuleRevealDate,
-          image: data.capsuleImage,
-          theme: data.capsuleTheme,
-        });
-
-        // storing form data in redis
+        // Store the form data temporarily without setting page to CONFIRM
         const stored = await storeCapsuleData(
           context,
           CURRENT_POST_ID,
@@ -267,7 +339,18 @@ Devvit.addCustomPostType({
           return;
         }
 
-        setPage(Pages.CONFIRM);
+        // Set form content without the reveal date yet
+        setFormContent({
+          title: data.capsuleTitle,
+          description: data.capsuleDescription,
+          image: data.capsuleImage,
+          theme: data.capsuleTheme,
+        });
+
+        setInitialDateTime();
+
+        // Navigate to datetime selector
+        setPage(Pages.DATETIME_SELECTOR);
       }
     );
 
@@ -319,26 +402,6 @@ Devvit.addCustomPostType({
           CURRENT_POST_ID,
           JSON.stringify({ ...formContent, description: data.description })
         );
-      }
-    );
-
-    const editRevealDateForm = useForm(
-      {
-        acceptLabel: "Save",
-        cancelLabel: "Cancel",
-        title: "Edit Reveal Date",
-        fields: [
-          {
-            name: "revealDate",
-            type: "string",
-            label: "Reveal Date",
-            required: true,
-            defaultValue: formContent.revealDate,
-          },
-        ],
-      },
-      async (data) => {
-        await updateRevealDate(data.revealDate);
       }
     );
 
@@ -441,14 +504,13 @@ Devvit.addCustomPostType({
           );
         }
 
-        const formattedRevealDate = formatDate(formContent.revealDate);
-
         setCurrentUsername(
           (await context.reddit.getCurrentUsername()) as string
         );
 
         setPage(Pages.BURYING);
-        storeCapsuleData(context, CURRENT_POST_ID, {
+
+        await storeCapsuleData(context, CURRENT_POST_ID, {
           ...formContent,
           buried: true,
         });
@@ -476,7 +538,8 @@ Devvit.addCustomPostType({
         }
 
         const revealDate = new Date(formContent.revealDate);
-        const notificationDate = new Date(revealDate.getTime() + 1000);
+        // Set notification to 1 minute before reveal
+        const notificationDate = new Date(revealDate.getTime() - 60 * 1000);
 
         await context.scheduler.runJob({
           name: "sendNotification",
@@ -484,13 +547,21 @@ Devvit.addCustomPostType({
             user,
             author: currentUsername,
             title: formContent.title,
-            // TODO : show date in viewers's timezone
-            revealDate: revealDate.toUTCString(),
+            // Convert to local time for display in notification
+            revealDate: convertToLocalTime(formContent.revealDate),
           },
-          // Notify user 1 second after the reveal date
+          // Notify user 1 minute before the reveal date
           runAt: notificationDate,
         });
-        context.ui.showToast("You will be notified 1 minute before reveal.");
+        console.log(
+          `Original date : ${formContent.revealDate}
+          Local date : ${convertToLocalTime(formContent.revealDate)}
+          Notification date : ${notificationDate}`
+        );
+        context.ui.showToast(
+          "You will be notified 1 minute before reveal! at " +
+            convertToLocalTime(formContent.revealDate)
+        );
       } catch (e) {
         console.error("Error notifying user:", e);
       }
@@ -565,7 +636,6 @@ Devvit.addCustomPostType({
                       onPress={() => context.ui.showForm(editTitleForm)}
                     />
                   </hstack>
-
                   {/* <!-- Reveal Date Section --> */}
                   <hstack width="100%">
                     <hstack alignment="middle start">
@@ -574,13 +644,13 @@ Devvit.addCustomPostType({
                       </text>
                       <spacer size="small" />
                       <text size="medium" color="orange" weight="bold" wrap>
-                        {formContent.revealDate}
+                        {convertToLocalTime(formContent.revealDate)}
                       </text>
                     </hstack>
                     <spacer grow />
                     <button
                       appearance="plain"
-                      icon="edit"
+                      icon="calendar"
                       onPress={() => setPage(Pages.DATETIME_SELECTOR)}
                     />
                   </hstack>
@@ -728,9 +798,9 @@ Devvit.addCustomPostType({
             <vstack height="100%" width="60%" alignment="middle center">
               <spacer height={10} />
               <text size="large" wrap alignment="middle center">
-                The "Reddit Time Capsule" app lets you craft a virtual time
-                capsule filled with text and an optional image, staying hidden
-                until your chosen reveal date arrives.
+                The "Time Capsule" app lets you craft a virtual time capsule
+                filled with text and an optional image, staying hidden until
+                your chosen reveal date arrives.
               </text>
               <spacer height={5} />
               <text size="large" wrap alignment="middle center">
@@ -755,85 +825,222 @@ Devvit.addCustomPostType({
         break;
       // 5: Teaser
       case Pages.TEASER:
-        // set background based on the theme
-        setBackgroundUrl(formContent.theme[0].toLowerCase() + ".jpg");
-
+        setRevealBackground();
         content = (
-          <vstack height="100%" width="100%" alignment="middle center">
-            <text size="xxlarge">Teaser</text>
-            <text size="xlarge">Time capsule buried by {currentUsername}</text>
-            <spacer height={10} />
-            <text size="xlarge">
-              {`Will be revealed on the subreddit ${CURRENT_SUBREDDIT_NAME} in ${time}`}
+          <vstack
+            height="100%"
+            width="100%"
+            padding="small"
+            alignment="middle center"
+            gap="small"
+          >
+            <text size="xlarge" weight="bold" color="white" alignment="center">
+              Time Capsule
             </text>
-            <spacer height={10} />
-            <vstack width="100%" alignment="middle center">
-              <vstack>
-                <text>Click below to notify you before the reveal.</text>
-                <button onPress={notifyUser}>Remind me!</button>
-              </vstack>
-              <vstack>
-                <text>Guess what's inside the capsule!</text>
+            <text size="small" color="white" alignment="center">
+              Buried by u/{currentUsername || "Anonymous"}
+            </text>
+
+            <vstack
+              backgroundColor="rgba(0, 0, 0, 0.6)"
+              padding="small"
+              cornerRadius="medium"
+              gap="small"
+              width="90%"
+            >
+              <text size="medium" color="white" alignment="center">
+                Opening in
+              </text>
+              <text
+                size="large"
+                color="orange"
+                weight="bold"
+                alignment="center"
+              >
+                {time}
+              </text>
+              <text size="small" color="white" alignment="center">
+                on r/{CURRENT_SUBREDDIT_NAME}
+              </text>
+            </vstack>
+
+            <hstack width="90%" gap="small" alignment="middle center">
+              <vstack
+                backgroundColor="rgba(0, 0, 0, 0.6)"
+                padding="small"
+                cornerRadius="medium"
+                grow
+                gap="small"
+                alignment="middle center"
+              >
+                <text size="small" color="white" alignment="center">
+                  Get notified
+                </text>
                 <button
+                  appearance="primary"
+                  icon="notification"
+                  size="small"
+                  onPress={notifyUser}
+                >
+                  Remind
+                </button>
+              </vstack>
+
+              <vstack
+                backgroundColor="rgba(0, 0, 0, 0.6)"
+                padding="small"
+                cornerRadius="medium"
+                grow
+                gap="small"
+                alignment="middle center"
+              >
+                <text size="small" color="white" alignment="center">
+                  What's inside?
+                </text>
+                <button
+                  appearance="secondary"
+                  icon="comment"
+                  size="small"
                   onPress={() =>
-                    context.ui.showForm(guessForm, { title: "Guess" })
+                    context.ui.showForm(guessForm, { title: "Make Your Guess" })
                   }
                 >
                   Guess
                 </button>
               </vstack>
-            </vstack>
+            </hstack>
           </vstack>
         );
         break;
       // 6: Reveal
       case Pages.REVEAL:
+        setRevealBackground();
+        const localRevealDate = formContent.revealDate
+          ? convertToLocalTime(formContent.revealDate)
+          : "soon";
+
         content = (
-          <vstack height="100%" width="100%" alignment="middle center">
-            <text size="xxlarge">Time Capsule Reveal</text>
-            <spacer height={10} />
-            <text size="xlarge">
-              The time capsule was buried by {currentUsername} and will be
-              revealed on {formContent.revealDate}
+          <vstack
+            height="100%"
+            width="100%"
+            padding="small"
+            alignment="middle center"
+            gap="small"
+          >
+            <text size="large" weight="bold" color="white" alignment="center">
+              Time Capsule Ready
             </text>
-            <spacer height={10} />
-            <text size="xlarge" wrap>
-              Press the button below to reveal the contents of the time capsule.
-            </text>
-            <spacer size="small" />
-            <button onPress={() => setPage(Pages.REVEAL_CONTENT)}>
-              Reveal
-            </button>
-            <spacer height={10} />
-          </vstack>
-        );
-        break;
-      // 7: Reveal Content
-      case Pages.REVEAL_CONTENT:
-        content = (
-          <vstack height="100%" width="100%" alignment="middle center">
-            <hstack alignment="start top" padding="small">
-              <icon name="close" onPress={() => setPage(Pages.REVEAL)} />
-            </hstack>
-            <vstack width="100%" alignment="middle center">
-              <text size="xxlarge">{formContent.title}</text>
-              <spacer height={10} />
-              <text size="xlarge">{formContent.description}</text>
-              <spacer height={10} />
-              <text size="xlarge">
-                Revealed by {currentUsername} on {getCurrentTime()}
+
+            <vstack
+              backgroundColor="rgba(0, 0, 0, 0.6)"
+              padding="small"
+              cornerRadius="medium"
+              gap="small"
+              width="90%"
+            >
+              <text size="small" color="white" alignment="center">
+                Buried by u/{currentUsername || "Anonymous"}
               </text>
-              <spacer height={10} />
-              {formContent.image && (
-                <button onPress={() => setPage(Pages.VIEW_IMAGE)}>
-                  See Image
-                </button>
-              )}
+              <text size="small" color="white" alignment="center">
+                on {localRevealDate}
+              </text>
+            </vstack>
+
+            <vstack
+              backgroundColor="rgba(0, 0, 0, 0.6)"
+              padding="small"
+              cornerRadius="medium"
+              gap="small"
+              width="90%"
+              alignment="middle center"
+            >
+              <text size="medium" color="white" alignment="center">
+                The moment has arrived!
+              </text>
+              <button
+                appearance="primary"
+                size="medium"
+                icon="unlock"
+                onPress={() => setPage(Pages.REVEAL_CONTENT)}
+              >
+                Open Capsule
+              </button>
             </vstack>
           </vstack>
         );
         break;
-      // 8: View Image
+      // 7: Reveal content
+      case Pages.REVEAL_CONTENT:
+        setRevealBackground();
+        const revealedDate = formContent.revealDate
+          ? convertToLocalTime(formContent.revealDate)
+          : "today";
+
+        content = (
+          <vstack
+            height="100%"
+            width="100%"
+            padding="small"
+            alignment="middle center"
+          >
+            <hstack width="100%" alignment="start top">
+              <button
+                appearance="plain"
+                icon="back"
+                size="small"
+                onPress={() => setPage(Pages.REVEAL)}
+              />
+            </hstack>
+
+            <vstack
+              backgroundColor="rgba(0, 0, 0, 0.6)"
+              padding="small"
+              cornerRadius="medium"
+              gap="small"
+              width="90%"
+              alignment="middle center"
+            >
+              <text size="large" weight="bold" color="white" alignment="center">
+                {formContent.title || "Time Capsule Contents"}
+              </text>
+
+              <vstack
+                backgroundColor="rgba(255, 255, 255, 0.1)"
+                padding="small"
+                cornerRadius="medium"
+                width="100%"
+              >
+                <text size="medium" color="white" alignment="center" wrap>
+                  {formContent.description || "No description provided."}
+                </text>
+              </vstack>
+
+              {formContent.image && (
+                <button
+                  appearance="primary"
+                  icon="image-post"
+                  size="small"
+                  onPress={() => setPage(Pages.VIEW_IMAGE)}
+                >
+                  View Image
+                </button>
+              )}
+
+              <vstack
+                backgroundColor="rgba(255, 255, 255, 0.1)"
+                padding="small"
+                cornerRadius="medium"
+                width="100%"
+              >
+                <text color="lightgray" size="small" alignment="center">
+                  By u/{currentUsername || "Anonymous"} • {revealedDate}
+                </text>
+              </vstack>
+            </vstack>
+          </vstack>
+        );
+        break;
+      // 8: View image
       case Pages.VIEW_IMAGE:
         content = (
           <zstack height="100%" width="100%" alignment="middle center">
@@ -859,8 +1066,63 @@ Devvit.addCustomPostType({
         break;
       // 9: DateTime Selector
       case Pages.DATETIME_SELECTOR:
+        const isDateInPast = () => {
+          const now = new Date();
+          // Create date in UTC for consistent comparison
+          const selectedDate = new Date(
+            Date.UTC(
+              dateTime.year,
+              dateTime.month - 1,
+              dateTime.day,
+              dateTime.ampm === "PM" && dateTime.hour !== 12
+                ? dateTime.hour + 12
+                : dateTime.ampm === "AM" && dateTime.hour === 12
+                ? 0
+                : dateTime.hour,
+              dateTime.minute
+            )
+          );
+
+          return selectedDate.getTime() < now.getTime();
+        };
+
+        const updateDateTimeWithValidation = (newDateTime: {
+          month?: any;
+          day?: any;
+          year?: any;
+          hour?: any;
+          minute?: any;
+          ampm?: string;
+        }) => {
+          const tempDateTime = { ...dateTime, ...newDateTime };
+          // Create date in UTC for consistent comparison
+          const tempDate = new Date(
+            Date.UTC(
+              tempDateTime.year,
+              tempDateTime.month - 1,
+              tempDateTime.day,
+              tempDateTime.ampm === "PM" && tempDateTime.hour !== 12
+                ? tempDateTime.hour + 12
+                : tempDateTime.ampm === "AM" && tempDateTime.hour === 12
+                ? 0
+                : tempDateTime.hour,
+              tempDateTime.minute
+            )
+          );
+
+          const now = new Date();
+
+          // Only update if the new date is in the future
+          if (tempDate.getTime() >= now.getTime()) {
+            setDateTime(tempDateTime);
+          } else {
+            context.ui.showToast("Cannot select a date in the past");
+          }
+        };
+
+        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
         content = (
-          // grid of 3 cols 2 rows with input and up down arrows above and below each item to change the date and time
           <>
             {/* DATE TIME REALTIME UPDATE VIEW */}
             <vstack width="100%" padding="medium" alignment="middle center">
@@ -869,23 +1131,33 @@ Devvit.addCustomPostType({
                   Set Reveal Date
                 </text>
               </hstack>
-              <hstack width="100%" alignment="middle center">
-                <text size="large" weight="bold" color="orange">
+              <hstack width="100%" alignment="middle center" gap="small">
+                <text
+                  size="large"
+                  weight="bold"
+                  color={isDateInPast() ? "red" : "orange"}
+                >
                   {`${dateTime.month.toString().padStart(2, "0")}/${dateTime.day
                     .toString()
                     .padStart(2, "0")}/${dateTime.year} ${dateTime.hour
                     .toString()
                     .padStart(2, "0")}:${dateTime.minute
                     .toString()
-                    .padStart(2, "0")}`}{" "}
+                    .padStart(2, "0")} `}
                 </text>
                 <text size="large" weight="bold" color="yellowgreen">
-                  {dateTime.ampm}
+                  {dateTime.ampm + " "}
                 </text>
                 <text size="large" weight="bold">
-                  UTC
+                  {timeZone}
                 </text>
               </hstack>
+
+              {isDateInPast() && (
+                <text color="red" size="small">
+                  Please select a future date and time
+                </text>
+              )}
 
               <spacer size="medium" />
 
@@ -897,8 +1169,7 @@ Devvit.addCustomPostType({
                     icon="upvote-outline"
                     size="small"
                     onPress={() =>
-                      setDateTime({
-                        ...dateTime,
+                      updateDateTimeWithValidation({
                         month: dateTime.month === 12 ? 1 : dateTime.month + 1,
                       })
                     }
@@ -908,8 +1179,7 @@ Devvit.addCustomPostType({
                     icon="downvote-outline"
                     size="small"
                     onPress={() =>
-                      setDateTime({
-                        ...dateTime,
+                      updateDateTimeWithValidation({
                         month: dateTime.month === 1 ? 12 : dateTime.month - 1,
                       })
                     }
@@ -922,8 +1192,7 @@ Devvit.addCustomPostType({
                     icon="upvote-outline"
                     size="small"
                     onPress={() =>
-                      setDateTime({
-                        ...dateTime,
+                      updateDateTimeWithValidation({
                         day: dateTime.day === 31 ? 1 : dateTime.day + 1,
                       })
                     }
@@ -933,8 +1202,7 @@ Devvit.addCustomPostType({
                     icon="downvote-outline"
                     size="small"
                     onPress={() =>
-                      setDateTime({
-                        ...dateTime,
+                      updateDateTimeWithValidation({
                         day: dateTime.day === 1 ? 31 : dateTime.day - 1,
                       })
                     }
@@ -947,8 +1215,7 @@ Devvit.addCustomPostType({
                     icon="upvote-outline"
                     size="small"
                     onPress={() =>
-                      setDateTime({
-                        ...dateTime,
+                      updateDateTimeWithValidation({
                         year: dateTime.year + 1,
                       })
                     }
@@ -958,8 +1225,7 @@ Devvit.addCustomPostType({
                     icon="downvote-outline"
                     size="small"
                     onPress={() =>
-                      setDateTime({
-                        ...dateTime,
+                      updateDateTimeWithValidation({
                         year: dateTime.year - 1,
                       })
                     }
@@ -974,8 +1240,7 @@ Devvit.addCustomPostType({
                     icon="upvote-outline"
                     size="small"
                     onPress={() =>
-                      setDateTime({
-                        ...dateTime,
+                      updateDateTimeWithValidation({
                         hour: dateTime.hour === 12 ? 1 : dateTime.hour + 1,
                       })
                     }
@@ -985,8 +1250,7 @@ Devvit.addCustomPostType({
                     icon="downvote-outline"
                     size="small"
                     onPress={() =>
-                      setDateTime({
-                        ...dateTime,
+                      updateDateTimeWithValidation({
                         hour: dateTime.hour === 1 ? 12 : dateTime.hour - 1,
                       })
                     }
@@ -999,8 +1263,7 @@ Devvit.addCustomPostType({
                     icon="upvote-outline"
                     size="small"
                     onPress={() =>
-                      setDateTime({
-                        ...dateTime,
+                      updateDateTimeWithValidation({
                         minute:
                           dateTime.minute === 59 ? 0 : dateTime.minute + 1,
                       })
@@ -1011,8 +1274,7 @@ Devvit.addCustomPostType({
                     icon="downvote-outline"
                     size="small"
                     onPress={() =>
-                      setDateTime({
-                        ...dateTime,
+                      updateDateTimeWithValidation({
                         minute:
                           dateTime.minute === 0 ? 59 : dateTime.minute - 1,
                       })
@@ -1026,8 +1288,7 @@ Devvit.addCustomPostType({
                     icon="upvote-outline"
                     size="small"
                     onPress={() =>
-                      setDateTime({
-                        ...dateTime,
+                      updateDateTimeWithValidation({
                         ampm: dateTime.ampm === "AM" ? "PM" : "AM",
                       })
                     }
@@ -1037,8 +1298,7 @@ Devvit.addCustomPostType({
                     icon="downvote-outline"
                     size="small"
                     onPress={() =>
-                      setDateTime({
-                        ...dateTime,
+                      updateDateTimeWithValidation({
                         ampm: dateTime.ampm === "AM" ? "PM" : "AM",
                       })
                     }
@@ -1056,26 +1316,66 @@ Devvit.addCustomPostType({
                 <button
                   appearance="secondary"
                   icon="back"
-                  onPress={() => setPage(Pages.CONFIRM)}
+                  onPress={() => {
+                    const revealDate = new Date(
+                      Date.UTC(
+                        dateTime.year,
+                        dateTime.month - 1,
+                        dateTime.day,
+                        dateTime.ampm === "PM" && dateTime.hour !== 12
+                          ? dateTime.hour + 12
+                          : dateTime.ampm === "AM" && dateTime.hour === 12
+                          ? 0
+                          : dateTime.hour,
+                        dateTime.minute
+                      )
+                    );
+
+                    // Update form content with the selected date
+                    setFormContent({
+                      ...formContent,
+                      revealDate: revealDate.toISOString(),
+                    });
+
+                    // Store the updated data
+                    storeCapsuleData(
+                      context,
+                      CURRENT_POST_ID,
+                      JSON.stringify({
+                        ...formContent,
+                        revealDate: revealDate.toISOString(),
+                      })
+                    );
+
+                    // Now navigate to confirm page
+                    setPage(Pages.CONFIRM);
+                  }}
                 >
                   Back
                 </button>
                 <button
                   appearance="primary"
                   icon="checkmark"
+                  disabled={isDateInPast()}
                   onPress={() => {
-                    updateRevealDate(
-                      `${dateTime.month
-                        .toString()
-                        .padStart(2, "0")}/${dateTime.day
-                        .toString()
-                        .padStart(2, "0")}/${dateTime.year} ${dateTime.hour
-                        .toString()
-                        .padStart(2, "0")}:${dateTime.minute
-                        .toString()
-                        .padStart(2, "0")} ${dateTime.ampm}`
-                    );
-                    setPage(Pages.CONFIRM);
+                    if (!isDateInPast()) {
+                      updateRevealDate(
+                        `${dateTime.month
+                          .toString()
+                          .padStart(2, "0")}/${dateTime.day
+                          .toString()
+                          .padStart(2, "0")}/${dateTime.year} ${dateTime.hour
+                          .toString()
+                          .padStart(2, "0")}:${dateTime.minute
+                          .toString()
+                          .padStart(2, "0")} ${dateTime.ampm}`
+                      );
+                      setPage(Pages.CONFIRM);
+                    } else {
+                      context.ui.showToast(
+                        "Please select a future date and time"
+                      );
+                    }
                   }}
                 >
                   Confirm
